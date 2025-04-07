@@ -3,6 +3,8 @@
 require_once('app/config/database.php');
 require_once('app/models/ProductModel.php');
 require_once('app/models/CategoryModel.php');
+require_once('app/helpers/SessionHelper.php');
+
 class ProductController
 {
     private $productModel;
@@ -16,29 +18,33 @@ class ProductController
 
     public function index()
     {
-        $banList = $this->getBanList(); 
-        $products = $this->productModel->getProducts();
-        include 'app/views/product/list.php';
+        // Redirect to the menu (homepage)
+        header('Location: /webbanhang/');
+        exit();
     }
-    
+
     public function show($id)
     {
         $product = $this->productModel->getProductById($id);
         if ($product) {
-        include 'app/views/product/show.php';
+            include 'app/views/product/show.php';
         } else {
-        echo "Không thấy sản phẩm.";
+            echo "Không thấy sản phẩm.";
         }
     }
 
     public function add()
     {
+        // Check if the user has the admin role
+        SessionHelper::checkAdmin();
         $categories = (new CategoryModel($this->db))->getCategories();
         include_once 'app/views/product/add.php';
     }
 
     public function save()
     {
+        // Check if the user has the admin role
+        SessionHelper::checkAdmin();
         if ($_SERVER['REQUEST_METHOD'] == 'POST') 
         {
             $name = $_POST['name'] ?? '';
@@ -58,15 +64,19 @@ class ProductController
                 $categories = (new CategoryModel($this->db))->getCategories();
                 include 'app/views/product/add.php';
             } else {
-                header('Location: /webbanhang/Product');
+                $success = "Sản phẩm đã được thêm thành công!";
+                $categories = (new CategoryModel($this->db))->getCategories();
+                include 'app/views/product/add.php';
             }
         }
     }
     
     public function edit($id)
     {
+        // Check if the user has the admin role
+        SessionHelper::checkAdmin();
         $product = $this->productModel->getProductById($id);
-        $categories = (new CategoryModel($this->db))->getCategories();
+        $categories = (new CategoryModel($this->db))->getCategories(); // Fetch categories
         if ($product) 
         {
             include 'app/views/product/edit.php';
@@ -77,6 +87,8 @@ class ProductController
 
     public function update()
     {
+        // Check if the user has the admin role
+        SessionHelper::checkAdmin();
         if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $id = $_POST['id'];
             $name = $_POST['name'];
@@ -99,6 +111,8 @@ class ProductController
 
     public function delete($id)
     {
+        // Check if the user has the admin role
+        SessionHelper::checkAdmin();
         if ($this->productModel->deleteProduct($id)) {
             header('Location: /webbanhang/Product');
         } else {
@@ -137,10 +151,10 @@ class ProductController
 
     public function addToCart($id)
     {
-        $product = $this->productModel ->getProductById($id);
+        $product = $this->productModel->getProductById($id);
         if (!$product) { 
             echo "Không tìm thấy sản phẩm.";
-        return;
+            return;
         }
         if (!isset($_SESSION['cart'])) {
             $_SESSION['cart'] = [];
@@ -149,10 +163,10 @@ class ProductController
             $_SESSION['cart'][$id]['quantity']++;
         } else {
             $_SESSION['cart'][$id] = [
-            'name' => $product->name,
-            'price' => $product->price,
-            'quantity' => 1,
-            'image' => $product->image
+                'name' => $product->name,
+                'price' => $product->price,
+                'quantity' => 1,
+                'image' => $product->image_url // Ensure this field is correct
             ];
         }
         header('Location: /webbanhang/Product/cart');
@@ -164,7 +178,7 @@ class ProductController
         $cart = isset($_SESSION['cart']) ? $_SESSION['cart'] : [];
         $totalPrice = 0;
 
-            // Tính tổng tiền
+        // Tính tổng tiền
         foreach ($cart as $item) {
             $totalPrice += $item['price'] * $item['quantity'];
         }
@@ -244,6 +258,7 @@ class ProductController
     {
         include 'app/views/product/orderConfirmation.php';
     }
+
     public function removeFromCart($id)
     {
         session_start(); // Đảm bảo session được khởi động
@@ -274,7 +289,7 @@ class ProductController
     public function getBanList()
     {
         $query = "SELECT * FROM ban";
-        $stmt = $this->db->prepare(query: $query);
+        $stmt = $this->db->prepare($query);
         $stmt->execute();
         return $stmt->fetchAll(PDO::FETCH_OBJ); // Trả về mảng các object ban
     }
@@ -300,6 +315,71 @@ class ProductController
         $_SESSION['bill_id'] = $bill_id;
 
         include 'app/views/Product/invoice.php';
+    }
+
+    public function search()
+    {
+        $query = $_GET['query'] ?? '';
+        $products = $this->productModel->searchProducts($query);
+        
+        if (count($products) == 1) {
+            $product = reset($products); // Get the single product
+            header('Location: /webbanhang/Product/show/' . $product->id);
+            exit();
+        }
+
+        include 'app/views/product/list.php';
+    }
+
+    public function viewMonthlyRevenue()
+    {
+        // Check if the user has the admin role
+        SessionHelper::checkAdmin();
+
+        // Get month and year from query parameters
+        $month = $_GET['month'] ?? null;
+        $year = $_GET['year'] ?? null;
+
+        // Build the query for monthly revenue
+        $query = "SELECT DATE_FORMAT(order_date, '%Y-%m') AS month, SUM(total_amount) AS total_revenue
+                  FROM orders";
+        $conditions = [];
+        $params = [];
+
+        if ($month) {
+            $conditions[] = "MONTH(order_date) = :month";
+            $params[':month'] = $month;
+        }
+        if ($year) {
+            $conditions[] = "YEAR(order_date) = :year";
+            $params[':year'] = $year;
+        }
+
+        if (!empty($conditions)) {
+            $query .= " WHERE " . implode(" AND ", $conditions);
+        }
+
+        $query .= " GROUP BY DATE_FORMAT(order_date, '%Y-%m') ORDER BY month DESC";
+
+        $stmt = $this->db->prepare($query);
+        $stmt->execute($params);
+        $monthlyRevenue = $stmt->fetchAll(PDO::FETCH_OBJ);
+
+        // Query for transaction details
+        $transactionQuery = "SELECT o.order_id, p.name AS product_name, oi.price, oi.quantity, (oi.price * oi.quantity) AS total_price
+                             FROM order_items oi
+                             JOIN orders o ON oi.order_id = o.order_id
+                             JOIN product p ON oi.product_id = p.id";
+        if (!empty($conditions)) {
+            $transactionQuery .= " WHERE " . implode(" AND ", $conditions);
+        }
+
+        $stmt = $this->db->prepare($transactionQuery);
+        $stmt->execute($params);
+        $transactionDetails = $stmt->fetchAll(PDO::FETCH_OBJ);
+
+        // Include the view to display the revenue
+        include 'app/views/product/monthly_revenue.php';
     }
 }
 ?>
